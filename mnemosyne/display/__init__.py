@@ -11,7 +11,11 @@ from .status import (
     print_info_message
 )
 from .progress import print_workflow_progress
-from .colors import PRIMARY_COLOR, SECONDARY_COLOR, NEUTRAL_COLOR
+from .colors import (
+    PRIMARY_COLOR, SECONDARY_COLOR, NEUTRAL_COLOR,
+    BACKGROUND, MAIN_TEXT, SECONDARY_TEXT,
+    ACCENT_1, ACCENT_2, SUCCESS, WARNING, ERROR
+)
 
 __all__ = [
     "print_banner",
@@ -22,5 +26,13 @@ __all__ = [
     "print_workflow_progress",
     "PRIMARY_COLOR",
     "SECONDARY_COLOR",
-    "NEUTRAL_COLOR"
+    "NEUTRAL_COLOR",
+    "BACKGROUND",
+    "MAIN_TEXT",
+    "SECONDARY_TEXT",
+    "ACCENT_1",
+    "ACCENT_2",
+    "SUCCESS",
+    "WARNING",
+    "ERROR"
 ]
