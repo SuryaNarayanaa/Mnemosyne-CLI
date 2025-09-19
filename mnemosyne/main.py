@@ -17,9 +17,12 @@ import asyncio
 from .mcp.github_client import list_tools as gh_list_tools, call_tool as gh_call_tool
 from .agents.github_agent import run_agent as run_github_agent
 
+from .ai_rag.cli import doc_app
+from dotenv import load_dotenv
 
+load_dotenv()
 app = typer.Typer()
-
+app.add_typer(doc_app, name="doc")
 mcp_app = typer.Typer(help="Manage and run MCP servers")
 app.add_typer(mcp_app, name="mcp")
 
@@ -117,6 +120,7 @@ def help():
     typer.echo("• mcp config [view|set] - Manage MCP config")
     typer.echo("• github login|tools|call - Use GitHub hosted MCP")
     typer.echo("• agent-github - Run GitHub agent (LangGraph)")
+    typer.echo("• doc - Knowledge agent (load & query documents)")
     typer.echo("• help - Show this list of features")
     typer.echo("\nUse 'python -m mnemosyne <command> --help' for more details on each command.")
 

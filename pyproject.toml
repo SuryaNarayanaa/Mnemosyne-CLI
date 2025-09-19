@@ -14,9 +14,13 @@ mnemo-mcp-custom = "mnemosyne.mcp.custom_tools_server:main"
 
 [tool.poetry.dependencies]
 python = "^3.12"
+
+# CLI & UI
 typer = "^0.17.4"
 rich = "^14.1.0"
 textual = "^6.1.0"
+
+# LLM / Workflow libs
 langchain = "^0.3.27"
 langgraph = "^0.6.7"
 fastmcp = "^2.12.3"
@@ -28,6 +32,16 @@ langchain-google-genai = "^2.0.5"
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
 
+# RAG & Embeddings
+langchain-community = "^0.3.27"
+faiss-cpu = "^1.9.0"
+pypdf = "^5.1.0"
+markdown = "^3.7"
+
+# Gemini LLM + Embeddings
+langchain-google-genai = "^2.0.7"
+google-generativeai = "^0.8.3"
+python-dotenv = "^1.0.1"
 
 [build-system]
 requires = ["poetry-core"]
