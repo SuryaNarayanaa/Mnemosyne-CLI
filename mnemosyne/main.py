@@ -1,8 +1,11 @@
 import typer
 from .display import print_banner, print_success_message
+from .ai_rag.cli import doc_app
+from dotenv import load_dotenv
 
+load_dotenv()
 app = typer.Typer()
-
+app.add_typer(doc_app, name="doc")
 
 @app.callback()
 def callback():
@@ -26,9 +29,6 @@ def help():
     typer.echo("• export - Export configurations to file")
     typer.echo("• import-config - Import configurations from file")
     typer.echo("• dashboard - Launch Textual TUI dashboard")
+    typer.echo("• doc - Knowledge agent (load & query documents)")
     typer.echo("• help - Show this list of features")
-    typer.echo("\nUse 'python -m mnemosyne <command> --help' for more details on each command.")
-
-
-    
-    
+    typer.echo("\nUse 'mnemo <command> --help' for more details on each command.")
