@@ -51,10 +51,14 @@ class AgentState(TypedDict):
 
 
 async def plan_node(state: AgentState, provider: str) -> AgentState:
-    state["trace"].append("GitHub: selecting LLM for planning")
+    msg_llm = "GitHub: selecting LLM for planning"
+    state["trace"].append(msg_llm)
+    print(msg_llm)
     llm = _llm(provider)
     pat = _get_pat()
-    state["trace"].append("GitHub: fetching tools and schemas from MCP")
+    msg_tools = "GitHub: fetching tools and schemas from MCP"
+    state["trace"].append(msg_tools)
+    print(msg_tools)
     tools = await gh_list_tools(pat)
     tool_map = await list_tools_full(pat)
     # Infer owner/repo from git remote if not provided
@@ -68,7 +72,9 @@ async def plan_node(state: AgentState, provider: str) -> AgentState:
         f"Available tools: {tools}. "
         f"If the tool requires owner/repo and user context provides it, include them."
     )
-    state["trace"].append("GitHub: prompting planner LLM")
+    msg_planning = "GitHub: prompting planner LLM"
+    state["trace"].append(msg_planning)
+    print(msg_planning)
     msg = await llm.ainvoke([
         ("system", system),
         ("user", state.get("prompt", "")),
@@ -79,7 +85,9 @@ async def plan_node(state: AgentState, provider: str) -> AgentState:
     except Exception:
         # Fallback: naive selection
         plan = {"tool": "repos.search_code", "arguments": {"query": state.get("prompt", "")}}
-    state["trace"].append(f"GitHub: planned tool={plan.get('tool')}")
+    msg_planned = f"GitHub: planned tool={plan.get('tool')}"
+    state["trace"].append(msg_planned)
+    print(msg_planned)
     # Autofill owner/repo if required by schema
     input_schema = (tool_map.get(plan.get("tool"), {}) or {}).get("inputSchema") or {}
     required = input_schema.get("required", []) if isinstance(input_schema, dict) else []
@@ -89,7 +97,9 @@ async def plan_node(state: AgentState, provider: str) -> AgentState:
     if "repo" in required and not args.get("repo") and state.get("repo"):
         args["repo"] = cast(Optional[str], state.get("repo"))
     if any(k in required for k in ("owner", "repo")):
-        state["trace"].append(f"GitHub: autofilled owner={args.get('owner')} repo={args.get('repo')}")
+        msg_autofill = f"GitHub: autofilled owner={args.get('owner')} repo={args.get('repo')}"
+        state["trace"].append(msg_autofill)
+        print(msg_autofill)
     plan["arguments"] = args
     state["plan"] = plan
     return state
@@ -118,10 +128,46 @@ async def act_node(state: AgentState) -> AgentState:
             "structured": None,
         }
         return state
-    state["trace"].append(f"GitHub: calling MCP tool {tool}")
+    msg_call = f"GitHub: calling MCP tool {tool}"
+    state["trace"].append(msg_call)
+    print(msg_call)
     result = await gh_call_tool(pat, tool, args)
-    state["trace"].append("GitHub: MCP call finished")
+    msg_finished = "GitHub: MCP call finished"
+    state["trace"].append(msg_finished)
+    print(msg_finished)
     state["result"] = result
+    return state
+
+
+async def format_node(state: AgentState) -> AgentState:
+    msg_format = "GitHub: formatting result with LLM"
+    state["trace"].append(msg_format)
+    print(msg_format)
+    provider = "azure"  # Use default provider for formatting
+    llm = _llm(provider)
+    result = state.get("result", {})
+    content = result.get("content", [])
+    if content:
+        # Use LLM to format the content into human-readable text
+        system = (
+            "You are a formatter that converts raw data into clean, human-readable text. "
+            "Format the provided data in a natural, easy-to-read way. "
+            "Use bullet points, numbered lists, or paragraphs as appropriate. "
+            "Keep it concise but informative."
+        )
+        data_str = json.dumps(content, indent=2)
+        msg = await llm.ainvoke([
+            ("system", system),
+            ("user", f"Format this data:\n{data_str}"),
+        ])
+        formatted = getattr(msg, "content", str(content))
+        if isinstance(formatted, str):
+            state["result"]["content"] = formatted
+        else:
+            state["result"]["content"] = str(content)
+    msg_done = "GitHub: formatting completed"
+    state["trace"].append(msg_done)
+    print(msg_done)
     return state
 
 
@@ -134,11 +180,16 @@ def build_graph(provider: str):
     async def _act(state: AgentState) -> AgentState:
         return await act_node(state)
 
+    async def _format(state: AgentState) -> AgentState:
+        return await format_node(state)
+
     g.add_node("plan", _plan)
     g.add_node("act", _act)
+    g.add_node("format", _format)
     g.add_edge(START, "plan")
     g.add_edge("plan", "act")
-    g.add_edge("act", END)
+    g.add_edge("act", "format")
+    g.add_edge("format", END)
     return g.compile()
 
 

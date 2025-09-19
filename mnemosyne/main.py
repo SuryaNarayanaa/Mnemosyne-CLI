@@ -59,14 +59,39 @@ def repl(provider: str = typer.Option("azure", help="Default model provider"), o
             break
         import json as _json
         res = asyncio.run(run_orchestrator(prompt, provider=provider, owner=owner, repo=repo))
-        trace = res.get("trace", [])
         result = res.get("result", {})
-        if trace:
-            print("--- steps ---")
-            for step in trace:
-                print(step)
-            print("-------------")
-        print(_json.dumps(result, indent=2))
+        # Format result human-readably
+        if "content" in result:
+            content = result["content"]
+            if isinstance(content, str):
+                print("\n--- Result ---")
+                print(content)
+            elif isinstance(content, list) and content and isinstance(content[0], dict):
+                # Fallback formatting
+                print("\n--- Result ---")
+                for i, item in enumerate(content, 1):
+                    name = item.get("name", "Unknown")
+                    full_name = item.get("full_name", name)
+                    desc = item.get("description", "No description")
+                    stars = item.get("stargazers_count", 0)
+                    language = item.get("language", "")
+                    print(f"{i}. {name} ({full_name})")
+                    if desc:
+                        print(f"   Description: {desc}")
+                    if stars:
+                        print(f"   Stars: {stars}")
+                    if language:
+                        print(f"   Language: {language}")
+                    print()
+            elif isinstance(content, list):
+                print("\n--- Result ---")
+                for item in content:
+                    print(item)
+            else:
+                print(f"\nResult: {content}")
+        if result.get("structured"):
+            print(f"Structured: {result['structured']}")
+        print("-------------")
 
 
 @app.command("start")
@@ -156,9 +181,39 @@ def agent_github(
     owner: Optional[str] = typer.Option(None, help="GitHub owner/org"),
     repo: Optional[str] = typer.Option(None, help="GitHub repo name"),
 ):
-    import json as _json
     result = asyncio.run(run_github_agent(prompt, provider=provider, owner=owner, repo=repo))
-    typer.echo(_json.dumps(result, indent=2))
+    # Format result human-readably
+    if "content" in result:
+        content = result["content"]
+        if isinstance(content, str):
+            typer.echo("--- Result ---")
+            typer.echo(content)
+        elif isinstance(content, list) and content and isinstance(content[0], dict):
+            # Fallback formatting
+            typer.echo("--- Result ---")
+            for i, item in enumerate(content, 1):
+                name = item.get("name", "Unknown")
+                full_name = item.get("full_name", name)
+                desc = item.get("description", "No description")
+                stars = item.get("stargazers_count", 0)
+                language = item.get("language", "")
+                typer.echo(f"{i}. {name} ({full_name})")
+                if desc:
+                    typer.echo(f"   Description: {desc}")
+                if stars:
+                    typer.echo(f"   Stars: {stars}")
+                if language:
+                    typer.echo(f"   Language: {language}")
+                typer.echo()
+        elif isinstance(content, list):
+            typer.echo("--- Result ---")
+            for item in content:
+                typer.echo(item)
+        else:
+            typer.echo(f"Result: {content}")
+    if result.get("structured"):
+        typer.echo(f"Structured: {result['structured']}")
+    typer.echo("-------------")
 
 
 @mcp_app.command("start")

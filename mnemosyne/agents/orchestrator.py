@@ -44,14 +44,18 @@ async def classify_node(state: OrchestratorState) -> OrchestratorState:
     for h in heuristics:
         if h in text:
             state["route"] = "github"
-            state["trace"].append(f"Orchestrator: heuristic match '{h.strip()}' → route=github")
+            msg = f"Orchestrator: heuristic match '{h.strip()}' → route=github"
+            state["trace"].append(msg)
+            print(msg)
             return state
     llm = _llm(state.get("provider", "azure"))
     system = (
         "You are a router. Respond with a single JSON object {route: 'github'|'default'}. "
         "If the user asks anything about GitHub repos/issues/PRs/actions, pick 'github'."
     )
-    state["trace"].append("Orchestrator: analyzing prompt via LLM router")
+    msg_llm = "Orchestrator: analyzing prompt via LLM router"
+    state["trace"].append(msg_llm)
+    print(msg_llm)
     msg = await llm.ainvoke([("system", system), ("user", state["prompt"])])
     content = getattr(msg, "content", "{}")
     try:
@@ -60,13 +64,17 @@ async def classify_node(state: OrchestratorState) -> OrchestratorState:
     except Exception:
         route = "default"
     state["route"] = route
-    state["trace"].append(f"Orchestrator: route={route}")
+    msg_route = f"Orchestrator: route={route}"
+    state["trace"].append(msg_route)
+    print(msg_route)
     return state
 
 
 async def act_node(state: OrchestratorState) -> OrchestratorState:
     if state.get("route") == "github":
-        state["trace"].append("Orchestrator: delegating to GitHub agent")
+        msg_delegate = "Orchestrator: delegating to GitHub agent"
+        state["trace"].append(msg_delegate)
+        print(msg_delegate)
         # Pass the same trace list into the GitHub agent so it can append its steps
         res = await run_github_agent(
             state["prompt"],
@@ -77,7 +85,9 @@ async def act_node(state: OrchestratorState) -> OrchestratorState:
         )
         state["result"] = res
         return state
-    state["trace"].append("Orchestrator: no matching agent, default echo")
+    msg_echo = "Orchestrator: no matching agent, default echo"
+    state["trace"].append(msg_echo)
+    print(msg_echo)
     state["result"] = {"content": ["No matching agent. Echo:", state["prompt"]], "structured": None}
     return state
 
