@@ -7,6 +7,10 @@ readme = "README.md"
 
 [tool.poetry.scripts]
 mnemo = "mnemosyne.main:app"
+mnemo-mcp-cli = "mnemosyne.mcp.cli_executor_server:main"
+mnemo-mcp-fs = "mnemosyne.mcp.filesystem_server:main"
+mnemo-mcp-git = "mnemosyne.mcp.git_server:main"
+mnemo-mcp-custom = "mnemosyne.mcp.custom_tools_server:main"
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -15,6 +19,14 @@ rich = "^14.1.0"
 textual = "^6.1.0"
 langchain = "^0.3.27"
 langgraph = "^0.6.7"
+fastmcp = "^2.12.3"
+mcp = "^1.14.1"
+keyring = "^25.4.1"
+langchain-openai = "^0.2.11"
+langchain-google-genai = "^2.0.5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
 
 
 [build-system]
