@@ -1,4 +1,11 @@
-
+.env
+*.env
+venv/
+__pycache__/
+.pytest_cache/
+dist/
+*.pyc
+.DS_Store
 ai_rag/vectorstore/
 
 # Byte-compiled / optimized / DLL files

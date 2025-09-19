@@ -35,6 +35,102 @@ Named after the Greek Titaness of memory and the mother of the Muses, Mnemosyne 
 - `mnemo workflow run workflow.yaml` - Run a workflow
 - `mnemo list --agents` - List agents
 - `mnemo dashboard` - Launch TUI dashboard
+ - `mnemo mcp config view` / `mnemo mcp config set <key> <value>`
+ - `mnemo mcp start [cli|fs|git|custom]`
+
+---
+
+## 🔌 MCP Servers
+
+This repo includes multiple MCP servers built with FastMCP 2.0, exposing safe tools to LLM agents over stdio. Each server can be launched as a standalone process and connected from an MCP-compatible client.
+
+### Install deps
+Use Poetry to install dependencies, including `fastmcp`:
+
+```
+poetry install
+```
+
+### CLI Executor Server
+Runs allowlisted shell commands and provides system info.
+
+Option A: via env vars (Windows `cmd`):
+
+```
+set MNEMO_MCP_CLI_ALLOW=python,git,dir
+mnemo-mcp-cli
+```
+
+Option B: via Typer subcommands (prompts if missing):
+
+```
+mnemo mcp config set cli.allow "python,git,dir"
+mnemo mcp start cli
+```
+
+Tools:
+- `run_command(command, cwd?, timeout_sec?)`
+- `system_info()`
+
+### Filesystem Server
+Provides safe read/write access rooted at a directory.
+
+Option A: via env vars and run:
+
+```
+set MNEMO_MCP_FS_ROOT=%CD%
+mnemo-mcp-fs
+```
+
+Option B: via Typer subcommands (prompts if missing):
+
+```
+mnemo mcp config set fs.root %CD%
+mnemo mcp start fs
+```
+
+Tools:
+- `ls(path=".")`
+- `read_file(path, encoding?, max_bytes?)`
+- `write_file(path, content, encoding?, overwrite?)`
+- `mkdir(path, exist_ok?)`
+- `move(src, dest, overwrite?)`
+- `delete(path)`
+
+### Git/Version Control Server
+Wraps common git commands and optionally GitHub CLI.
+
+Run:
+
+```
+mnemo-mcp-git
+```
+
+Tools:
+- `status(repo_dir=".")`
+- `diff(repo_dir=".", path?)`
+- `branches(repo_dir=".")`
+- `commit(repo_dir=".", message="Update")`
+- `create_branch(repo_dir=".", name)`
+- `gh_pr_list(repo_dir=".", limit)`
+
+### Custom Tools Server
+Sample club tools: event registration, leaderboard, resource sharing.
+
+Run:
+
+```
+mnemo-mcp-custom
+```
+
+Tools:
+- `register_event(user, event)`
+- `update_leaderboard(user, delta)`
+- `share_resource(title, url, description?)`
+- `list_data()`
+
+### Connecting from Clients
+These servers speak MCP over stdio; point your MCP client to spawn the respective command, e.g. `mnemo-mcp-fs`. For example, many LLM apps allow configuring an MCP server with a command and args. See FastMCP docs: https://gofastmcp.com/
 ---
 
 ## 🧠 Philosophy
@@ -66,6 +162,7 @@ Mnemosyne brings together:
 - [LangGraph](https://langgraph.com/) - For workflow orchestration
 - [Rich](https://github.com/Textualize/rich) - For CLI output
 - [Textual](https://github.com/Textualize/textual) - For TUI dashboard
+- [USAGE.md](./USAGE.md) - How to use the included MCP servers
 
 ---
 
