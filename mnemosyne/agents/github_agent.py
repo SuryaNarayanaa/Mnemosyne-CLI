@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Dict, Optional, TypedDict, cast, List
+import difflib
+from typing import Any, Dict, Optional, TypedDict, cast, List, Tuple
 
 from langgraph.graph import START, END, StateGraph
 from langchain_openai import AzureChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
+from pydantic import SecretStr
 
 from ..mcp.github_client import list_tools as gh_list_tools, list_tools_full, call_tool as gh_call_tool
 import keyring
@@ -23,22 +25,31 @@ def _get_pat() -> str:
     return pat
 
 
-def _llm(provider: str):
-    provider = provider.lower()
-    if provider == "azure":
-        from pydantic import SecretStr
-        return AzureChatOpenAI(
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_key=SecretStr(os.getenv("AZURE_OPENAI_KEY", "")),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-nano"),
-            temperature=0.2,
+def _llm(provider: str) -> Tuple[Any, str]:
+    desired = (provider or "azure").lower()
+    if desired == "azure":
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        key = os.getenv("AZURE_OPENAI_KEY")
+        if endpoint and key:
+            return (
+                AzureChatOpenAI(
+                    azure_endpoint=endpoint,
+                    api_key=SecretStr(key),
+                    api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                    model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-nano"),
+                ),
+                "azure",
+            )
+        # Fall back to Gemini if Azure creds missing
+        desired = "gemini"
+    if desired == "gemini":
+        if os.getenv("GOOGLE_API_KEY"):
+            return ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.2), "gemini"
+        raise RuntimeError(
+            "No LLM provider configured. Set Azure OpenAI environment variables or GOOGLE_API_KEY, "
+            "or pass --provider gemini after configuring Google Generative AI."
         )
-    elif provider == "gemini":
-        # Requires GOOGLE_API_KEY
-        return ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.2)
-    else:
-        raise ValueError("provider must be 'azure' or 'gemini'")
+    raise ValueError("provider must be 'azure' or 'gemini'")
 
 
 class AgentState(TypedDict):
@@ -48,19 +59,51 @@ class AgentState(TypedDict):
     plan: Dict[str, Any]
     result: Dict[str, Any]
     trace: List[str]
+    llm_provider: str
 
 
 async def plan_node(state: AgentState, provider: str) -> AgentState:
     msg_llm = "GitHub: selecting LLM for planning"
     state["trace"].append(msg_llm)
     print(msg_llm)
-    llm = _llm(provider)
-    pat = _get_pat()
+    try:
+        llm, resolved_provider = _llm(state.get("llm_provider") or provider)
+        state["llm_provider"] = resolved_provider
+        if resolved_provider != (provider or "azure").lower():
+            msg_fallback = f"GitHub: falling back to {resolved_provider} provider"
+            state["trace"].append(msg_fallback)
+            print(msg_fallback)
+    except RuntimeError as exc:
+        error_msg = f"GitHub: LLM unavailable - {exc}"
+        state["trace"].append(error_msg)
+        print(error_msg)
+        state["result"] = {"content": [str(exc)], "structured": None}
+        state["plan"] = {}
+        return state
+
+    try:
+        pat = _get_pat()
+    except RuntimeError as exc:
+        error_msg = f"GitHub: {exc}"
+        state["trace"].append(error_msg)
+        print(error_msg)
+        state["result"] = {"content": [str(exc)], "structured": None}
+        state["plan"] = {}
+        return state
+
     msg_tools = "GitHub: fetching tools and schemas from MCP"
     state["trace"].append(msg_tools)
     print(msg_tools)
-    tools = await gh_list_tools(pat)
-    tool_map = await list_tools_full(pat)
+    try:
+        tools = await gh_list_tools(pat)
+        tool_map = await list_tools_full(pat)
+    except Exception as exc:
+        error_msg = f"GitHub: failed to list tools - {exc}"
+        state["trace"].append(error_msg)
+        print(error_msg)
+        state["result"] = {"content": ["Unable to retrieve GitHub tools.", str(exc)], "structured": None}
+        state["plan"] = {}
+        return state
     # Infer owner/repo from git remote if not provided
     if not state.get("owner") or not state.get("repo"):
         own, rep = _infer_owner_repo()
@@ -88,6 +131,18 @@ async def plan_node(state: AgentState, provider: str) -> AgentState:
     msg_planned = f"GitHub: planned tool={plan.get('tool')}"
     state["trace"].append(msg_planned)
     print(msg_planned)
+    if plan.get("tool") not in tool_map:
+        msg_missing = f"GitHub: tool '{plan.get('tool')}' not available in GitHub MCP"
+        state["trace"].append(msg_missing)
+        print(msg_missing)
+        suggestions = difflib.get_close_matches(plan.get("tool"), list(tool_map.keys()), n=3)
+        hint = (
+            f"Tool '{plan.get('tool')}' is not available."
+            + (f" Did you mean: {', '.join(suggestions)}?" if suggestions else " Use 'mnemo github tools' to list supported tools.")
+        )
+        state["result"] = {"content": hint, "structured": None}
+        state["plan"] = {}
+        return state
     # Autofill owner/repo if required by schema
     input_schema = (tool_map.get(plan.get("tool"), {}) or {}).get("inputSchema") or {}
     required = input_schema.get("required", []) if isinstance(input_schema, dict) else []
@@ -105,9 +160,24 @@ async def plan_node(state: AgentState, provider: str) -> AgentState:
     return state
 
 
+def _fallback_format(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        try:
+            return json.dumps(content, indent=2, ensure_ascii=False)
+        except TypeError:
+            return "\n".join(str(item) for item in content)
+    if isinstance(content, dict):
+        return json.dumps(content, indent=2, ensure_ascii=False)
+    return str(content)
+
+
 async def act_node(state: AgentState) -> AgentState:
-    pat = _get_pat()
     plan = state.get("plan") or {}
+    if not plan.get("tool"):
+        return state
+    pat = _get_pat()
     tool = plan.get("tool") or "repos.search_code"
     args = plan.get("arguments", {})
     # Treat placeholders as missing
@@ -131,7 +201,14 @@ async def act_node(state: AgentState) -> AgentState:
     msg_call = f"GitHub: calling MCP tool {tool}"
     state["trace"].append(msg_call)
     print(msg_call)
-    result = await gh_call_tool(pat, tool, args)
+    try:
+        result = await gh_call_tool(pat, tool, args)
+    except Exception as exc:
+        error_msg = f"GitHub: MCP call failed - {exc}"
+        state["trace"].append(error_msg)
+        print(error_msg)
+        state["result"] = {"content": f"GitHub MCP call failed: {exc}", "structured": None}
+        return state
     msg_finished = "GitHub: MCP call finished"
     state["trace"].append(msg_finished)
     print(msg_finished)
@@ -139,32 +216,48 @@ async def act_node(state: AgentState) -> AgentState:
     return state
 
 
-async def format_node(state: AgentState) -> AgentState:
+async def format_node(state: AgentState, provider: str) -> AgentState:
+    result = state.get("result", {})
+    content = result.get("content")
+    if not content:
+        return state
+    if isinstance(content, str):
+        return state
+
     msg_format = "GitHub: formatting result with LLM"
     state["trace"].append(msg_format)
     print(msg_format)
-    provider = "azure"  # Use default provider for formatting
-    llm = _llm(provider)
-    result = state.get("result", {})
-    content = result.get("content", [])
-    if content:
-        # Use LLM to format the content into human-readable text
-        system = (
-            "You are a formatter that converts raw data into clean, human-readable text. "
-            "Format the provided data in a natural, easy-to-read way. "
-            "Use bullet points, numbered lists, or paragraphs as appropriate. "
-            "Keep it concise but informative."
-        )
-        data_str = json.dumps(content, indent=2)
-        msg = await llm.ainvoke([
-            ("system", system),
-            ("user", f"Format this data:\n{data_str}"),
-        ])
-        formatted = getattr(msg, "content", str(content))
-        if isinstance(formatted, str):
-            state["result"]["content"] = formatted
-        else:
-            state["result"]["content"] = str(content)
+
+    effective_provider = state.get("llm_provider") or provider
+    try:
+        llm, resolved_provider = _llm(effective_provider)
+        state["llm_provider"] = resolved_provider
+    except RuntimeError as exc:
+        fallback_msg = f"GitHub: formatting fallback - {exc}"
+        state["trace"].append(fallback_msg)
+        print(fallback_msg)
+        state["result"]["content"] = _fallback_format(content)
+        return state
+
+    system = (
+        "You are a formatter that converts raw data into clean, human-readable text. "
+        "Format the provided data in a natural, easy-to-read way. "
+        "Use bullet points, numbered lists, or short paragraphs as appropriate. "
+        "Keep it concise but informative."
+    )
+    data_str = json.dumps(content, indent=2, ensure_ascii=False)
+    msg = await llm.ainvoke([
+        ("system", system),
+        ("user", f"Format this data in a human-friendly way:\n{data_str}"),
+    ])
+    formatted = getattr(msg, "content", None)
+    if isinstance(formatted, str):
+        state["result"]["content"] = formatted
+    elif isinstance(formatted, list):
+        state["result"]["content"] = "\n".join(str(part) for part in formatted)
+    else:
+        state["result"]["content"] = _fallback_format(content)
+
     msg_done = "GitHub: formatting completed"
     state["trace"].append(msg_done)
     print(msg_done)
@@ -181,7 +274,7 @@ def build_graph(provider: str):
         return await act_node(state)
 
     async def _format(state: AgentState) -> AgentState:
-        return await format_node(state)
+        return await format_node(state, provider)
 
     g.add_node("plan", _plan)
     g.add_node("act", _act)
@@ -195,7 +288,15 @@ def build_graph(provider: str):
 
 async def run_agent(prompt: str, provider: str = "azure", owner: Optional[str] = None, repo: Optional[str] = None, trace: Optional[List[str]] = None) -> Dict[str, Any]:
     graph = build_graph(provider)
-    state: AgentState = {"prompt": prompt, "owner": owner, "repo": repo, "plan": {}, "result": {}, "trace": trace or []}
+    state: AgentState = {
+        "prompt": prompt,
+        "owner": owner,
+        "repo": repo,
+        "plan": {},
+        "result": {},
+        "trace": trace or [],
+        "llm_provider": (provider or "azure").lower(),
+    }
     final = await graph.ainvoke(state)
     return final.get("result", {})
 

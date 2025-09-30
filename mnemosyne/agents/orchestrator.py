@@ -26,15 +26,26 @@ def _llm(provider: str):
     provider = (provider or "azure").lower()
     if provider == "azure":
         from pydantic import SecretStr
-        return AzureChatOpenAI(
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-            api_key=SecretStr(os.getenv("AZURE_OPENAI_KEY", "")),
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-nano"),
-            temperature=0.0,
+
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        key = os.getenv("AZURE_OPENAI_KEY")
+        if endpoint and key:
+            return AzureChatOpenAI(
+                azure_endpoint=endpoint,
+                api_key=SecretStr(key),
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-nano"),
+                temperature=0.0,
+            )
+        provider = "gemini"
+    if provider == "gemini":
+        if os.getenv("GOOGLE_API_KEY"):
+            return ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.0)
+        raise RuntimeError(
+            "Router LLM unavailable. Set Azure OpenAI environment variables or GOOGLE_API_KEY, "
+            "or pass --provider gemini after configuring Google Generative AI."
         )
-    else:
-        return ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.0)
+    raise ValueError("provider must be 'azure' or 'gemini'")
 
 
 async def classify_node(state: OrchestratorState) -> OrchestratorState:
@@ -48,7 +59,14 @@ async def classify_node(state: OrchestratorState) -> OrchestratorState:
             state["trace"].append(msg)
             print(msg)
             return state
-    llm = _llm(state.get("provider", "azure"))
+    try:
+        llm = _llm(state.get("provider", "azure"))
+    except RuntimeError as exc:
+        msg_error = f"Orchestrator: LLM router unavailable - {exc}. Defaulting to route=default"
+        state["trace"].append(msg_error)
+        print(msg_error)
+        state["route"] = "default"
+        return state
     system = (
         "You are a router. Respond with a single JSON object {route: 'github'|'default'}. "
         "If the user asks anything about GitHub repos/issues/PRs/actions, pick 'github'."
@@ -76,15 +94,28 @@ async def act_node(state: OrchestratorState) -> OrchestratorState:
         state["trace"].append(msg_delegate)
         print(msg_delegate)
         # Pass the same trace list into the GitHub agent so it can append its steps
-        res = await run_github_agent(
-            state["prompt"],
-            provider=state.get("provider", "azure"),
-            owner=state.get("owner"),
-            repo=state.get("repo"),
-            trace=state["trace"],
-        )
-        state["result"] = res
-        return state
+        try:
+            res = await run_github_agent(
+                state["prompt"],
+                provider=state.get("provider", "azure"),
+                owner=state.get("owner"),
+                repo=state.get("repo"),
+                trace=state["trace"],
+            )
+            state["result"] = res
+            return state
+        except RuntimeError as exc:
+            msg_error = f"Orchestrator: GitHub agent error - {exc}"
+            state["trace"].append(msg_error)
+            print(msg_error)
+            state["result"] = {"content": [str(exc)], "structured": None}
+            return state
+        except Exception as exc:
+            msg_error = f"Orchestrator: unexpected GitHub agent failure - {exc}"
+            state["trace"].append(msg_error)
+            print(msg_error)
+            state["result"] = {"content": ["GitHub agent failed.", str(exc)], "structured": None}
+            return state
     msg_echo = "Orchestrator: no matching agent, default echo"
     state["trace"].append(msg_echo)
     print(msg_echo)

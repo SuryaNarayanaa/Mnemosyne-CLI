@@ -1,7 +1,8 @@
+import json
 import os
 import subprocess
 import sys
-from typing import Optional
+from typing import Any, Callable, List, Optional, Tuple
 import typer
 from .display import print_banner, print_success_message
 from .config import (
@@ -14,7 +15,7 @@ from .config import (
 )
 import keyring
 import asyncio
-from .mcp.github_client import list_tools as gh_list_tools, call_tool as gh_call_tool
+from .mcp.github_client import list_tools as gh_list_tools, list_tools_full as gh_list_tools_full, call_tool as gh_call_tool
 from .agents.github_agent import run_agent as run_github_agent
 
 from .ai_rag.cli import doc_app
@@ -60,41 +61,10 @@ def repl(provider: str = typer.Option("azure", help="Default model provider"), o
             continue
         if prompt.lower() in {"exit", "quit"}:
             break
-        import json as _json
         res = asyncio.run(run_orchestrator(prompt, provider=provider, owner=owner, repo=repo))
         result = res.get("result", {})
-        # Format result human-readably
-        if "content" in result:
-            content = result["content"]
-            if isinstance(content, str):
-                print("\n--- Result ---")
-                print(content)
-            elif isinstance(content, list) and content and isinstance(content[0], dict):
-                # Fallback formatting
-                print("\n--- Result ---")
-                for i, item in enumerate(content, 1):
-                    name = item.get("name", "Unknown")
-                    full_name = item.get("full_name", name)
-                    desc = item.get("description", "No description")
-                    stars = item.get("stargazers_count", 0)
-                    language = item.get("language", "")
-                    print(f"{i}. {name} ({full_name})")
-                    if desc:
-                        print(f"   Description: {desc}")
-                    if stars:
-                        print(f"   Stars: {stars}")
-                    if language:
-                        print(f"   Language: {language}")
-                    print()
-            elif isinstance(content, list):
-                print("\n--- Result ---")
-                for item in content:
-                    print(item)
-            else:
-                print(f"\nResult: {content}")
-        if result.get("structured"):
-            print(f"Structured: {result['structured']}")
-        print("-------------")
+        print()
+        _render_result(result.get("content"), result.get("structured"), print)
 
 
 @app.command("start")
@@ -131,6 +101,7 @@ def _spawn(cmd: list[str]):
 
 
 GITHUB_PAT_SERVICE = "mnemosyne.github.mcp"
+GITHUB_PAT_MISSING_MSG = "GitHub PAT not found. Run 'mnemo github login' first."
 
 
 def _store_pat(pat: str):
@@ -139,6 +110,54 @@ def _store_pat(pat: str):
 
 def _load_pat() -> str | None:
     return keyring.get_password(GITHUB_PAT_SERVICE, "pat")
+
+
+def _require_pat(emit: Callable[[str], None]) -> str:
+    pat = _load_pat()
+    if not pat:
+        emit(GITHUB_PAT_MISSING_MSG)
+        raise typer.Exit(code=1)
+    return pat
+
+
+RESULT_HEADER = "--- Result ---"
+RESULT_FOOTER = "-------------"
+STRUCTURED_LABEL = "Structured content:"
+
+
+def _render_content_block(content: Any, emit: Callable[[str], None]) -> None:
+    if isinstance(content, str):
+        emit(content)
+        return
+    if isinstance(content, dict):
+        emit(json.dumps(content, indent=2, ensure_ascii=False))
+        return
+    if isinstance(content, list):
+        if not content:
+            emit("[]")
+            return
+        for idx, item in enumerate(content):
+            if isinstance(item, (dict, list)):
+                emit(json.dumps(item, indent=2, ensure_ascii=False))
+            else:
+                emit(str(item))
+            if idx < len(content) - 1:
+                emit("")
+        return
+    emit(str(content))
+
+
+def _render_result(content: Any, structured: Any, emit: Callable[[str], None]) -> None:
+    has_content = content not in (None, "") and not (isinstance(content, list) and len(content) == 0)
+    if has_content:
+        emit(RESULT_HEADER)
+        _render_content_block(content, emit)
+        emit(RESULT_FOOTER)
+    else:
+        emit("No content returned.")
+    if structured not in (None, {}):
+        emit(STRUCTURED_LABEL)
+        emit(json.dumps(structured, indent=2, ensure_ascii=False))
 
 
 @gh_app.command("login")
@@ -155,10 +174,12 @@ def github_login(pat: Optional[str] = typer.Option(None, help="GitHub Personal A
 
 @gh_app.command("tools")
 def github_tools():
-    pat = _load_pat()
-    if not pat:
+    pat = _require_pat(typer.echo)
+    try:
+        names = asyncio.run(gh_list_tools(pat))
+    except Exception as exc:
+        typer.echo(f"Error retrieving tools from GitHub MCP: {exc}")
         raise typer.Exit(code=1)
-    names = asyncio.run(gh_list_tools(pat))
     for n in names:
         typer.echo(n)
 
@@ -166,16 +187,76 @@ def github_tools():
 @gh_app.command("call")
 def github_call(tool: str, args: str = typer.Option("{}", help="JSON dict of arguments")):
     import json as _json
-    pat = _load_pat()
-    if not pat:
-        raise typer.Exit(code=1)
+    pat = _require_pat(typer.echo)
     try:
         arguments = _json.loads(args)
     except Exception:
         typer.echo("Invalid JSON for --args")
         raise typer.Exit(code=2)
-    result = asyncio.run(gh_call_tool(pat, tool, arguments))
-    typer.echo(_json.dumps(result, indent=2))
+    try:
+        result = asyncio.run(gh_call_tool(pat, tool, arguments))
+    except Exception as exc:
+        typer.echo(f"Error calling GitHub MCP tool '{tool}': {exc}")
+        raise typer.Exit(code=1)
+    _render_result(result.get("content"), result.get("structured"), typer.echo)
+
+
+async def _run_github_tool_tests(pat: str, limit: Optional[int], include_required: bool) -> List[Tuple[str, str, str]]:
+    results: List[Tuple[str, str, str]] = []
+    meta = await gh_list_tools_full(pat)
+    names = sorted(meta.keys())
+    if limit is not None:
+        names = names[:limit]
+
+    for name in names:
+        schema = (meta.get(name, {}) or {}).get("inputSchema") or {}
+        required = schema.get("required") or []
+        if required and not include_required:
+            results.append((name, "skipped", f"requires parameters: {', '.join(required)}"))
+            continue
+        try:
+            await gh_call_tool(pat, name, {})
+            results.append((name, "ok", ""))
+        except Exception as exc:  # pragma: no cover - network dependent
+            message = str(exc)
+            lowered = message.lower()
+            if "no copilot spaces found" in lowered:
+                results.append((name, "skipped", "no Copilot spaces available"))
+            else:
+                results.append((name, "error", message))
+    return results
+
+
+@gh_app.command("test")
+def github_test(
+    limit: Optional[int] = typer.Option(None, help="Maximum number of tools to exercise."),
+    include_required: bool = typer.Option(False, help="Attempt tools that require parameters using empty payloads (may fail)."),
+):
+    """Call each GitHub MCP tool with minimal arguments to verify connectivity."""
+
+    pat = _require_pat(typer.echo)
+    try:
+        outcomes = asyncio.run(_run_github_tool_tests(pat, limit, include_required))
+    except Exception as exc:
+        typer.echo(f"GitHub tool test failed: {exc}")
+        raise typer.Exit(code=1)
+
+    passed = sum(1 for _, status, _ in outcomes if status == "ok")
+    skipped = sum(1 for _, status, _ in outcomes if status == "skipped")
+    failed = sum(1 for _, status, _ in outcomes if status == "error")
+
+    for name, status, detail in outcomes:
+        if status == "ok":
+            typer.echo(f"✓ {name}")
+        elif status == "skipped":
+            typer.echo(f"- {name} (skipped: {detail})")
+        else:
+            typer.echo(f"✗ {name} -> {detail}")
+
+    typer.echo("")
+    typer.echo(f"Summary: {passed} passed, {failed} failed, {skipped} skipped")
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("agent-github")
@@ -185,39 +266,15 @@ def agent_github(
     owner: Optional[str] = typer.Option(None, help="GitHub owner/org"),
     repo: Optional[str] = typer.Option(None, help="GitHub repo name"),
 ):
-    result = asyncio.run(run_github_agent(prompt, provider=provider, owner=owner, repo=repo))
-    # Format result human-readably
-    if "content" in result:
-        content = result["content"]
-        if isinstance(content, str):
-            typer.echo("--- Result ---")
-            typer.echo(content)
-        elif isinstance(content, list) and content and isinstance(content[0], dict):
-            # Fallback formatting
-            typer.echo("--- Result ---")
-            for i, item in enumerate(content, 1):
-                name = item.get("name", "Unknown")
-                full_name = item.get("full_name", name)
-                desc = item.get("description", "No description")
-                stars = item.get("stargazers_count", 0)
-                language = item.get("language", "")
-                typer.echo(f"{i}. {name} ({full_name})")
-                if desc:
-                    typer.echo(f"   Description: {desc}")
-                if stars:
-                    typer.echo(f"   Stars: {stars}")
-                if language:
-                    typer.echo(f"   Language: {language}")
-                typer.echo()
-        elif isinstance(content, list):
-            typer.echo("--- Result ---")
-            for item in content:
-                typer.echo(item)
-        else:
-            typer.echo(f"Result: {content}")
-    if result.get("structured"):
-        typer.echo(f"Structured: {result['structured']}")
-    typer.echo("-------------")
+    try:
+        result = asyncio.run(run_github_agent(prompt, provider=provider, owner=owner, repo=repo))
+    except RuntimeError as exc:
+        typer.echo(f"Error: {exc}")
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        typer.echo(f"Unexpected error running GitHub agent: {exc}")
+        raise typer.Exit(code=1)
+    _render_result(result.get("content"), result.get("structured"), typer.echo)
 
 
 @mcp_app.command("start")

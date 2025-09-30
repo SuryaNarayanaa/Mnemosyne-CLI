@@ -52,3 +52,19 @@ This way, Poetry handles the virtual environment creation automatically during `
 - `mnemo workflow run workflow.yaml` - Run a workflow
 - `mnemo list --agents` - List agents
 - `mnemo dashboard` - Launch TUI dashboard
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
