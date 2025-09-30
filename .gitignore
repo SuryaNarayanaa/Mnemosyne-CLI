@@ -7,7 +7,7 @@ dist/
 *.pyc
 .DS_Store
 ai_rag/vectorstore/
-
+poetry.lock
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
